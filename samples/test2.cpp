@@ -15,6 +15,6 @@ int main(int argc, char **argv) {
 	if (true) {
 		char c1 = (char)(i1*i1);
 	}
-	return 0;
+	return i1;
 }
 

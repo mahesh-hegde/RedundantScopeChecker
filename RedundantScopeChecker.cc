@@ -30,16 +30,6 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 
 	DiagnosticsEngine &d;
 
-	// So a brief description of algorithm goes as follows
-	// Every compound statement updates the vector with usages from its children
-	// If there are multiple usages, it merges them and provides a single
-	// UsageInformation.
-	// Each parent has the responsibility to merge all its children into one,
-	// if there's more than one.
-	// So at the end, every variable in this map will have at most one usage.
-	//
-	// The merging happens as follows, if the vector has single UsageInformation
-	// return it. Else, return a UsageInformation{this_compound_stmt, vector}
 	std::unordered_map<VarDecl *, std::vector<UsageInformation>> usages;
 
 	// merges all children of `compound` in vector under `compound`
@@ -56,8 +46,8 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		v.erase(itr+1, v.end());
 	}
 
-	int depth;
-	unsigned int unusedWarning, redundantScopeWarning, usageNote;
+	int depth = 0;
+	unsigned int unusedWarning, redundantScopeWarning, usageNote, usageStmtNote;
 
 	bool isInHeader(Decl *decl) {
 		auto loc = decl->getLocation();
@@ -94,7 +84,7 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		for (auto& use: uses) {
 			if (use.children.empty()) {
 				auto loc = context->getFullLoc((use.usedIn)->getBeginLoc());
-				d.Report(loc, usageNote);
+				d.Report(loc, usageStmtNote);
 			} else {
 				printNotes(vdecl, use.children);
 			}
@@ -110,7 +100,8 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		                      "Unused variable: '%0'");
 		redundantScopeWarning = d.getCustomDiagID(DiagnosticsEngine::Warning,
 				"variable %0 only used in a smaller scope, consider moving it.");
-		usageNote = d.getCustomDiagID(DiagnosticsEngine::Note, "Used here.");
+		usageNote = d.getCustomDiagID(DiagnosticsEngine::Note, "=====> Used in this block <=====");
+		usageStmtNote = d.getCustomDiagID(DiagnosticsEngine::Note, "Used here.");
 	}
 
 	bool VisitDeclRefExpr(DeclRefExpr *e) {
@@ -123,7 +114,7 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 						  ->getCanonicalDecl();
 				if (usages.count(vd)) {
 					// add the current compound statement to usages vector
-					usages[vd].push_back((UsageInformation){parentStmt, {}});
+					usages[vd].push_back((UsageInformation){e, parentStmt, {}});
 				}
 			}
 		}
@@ -134,8 +125,10 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		if (isInHeader(decl)) {
 			return true;
 		}
-		auto cd = decl->getCanonicalDecl();
-		usages[cd] = {};
+		if (depth == 0) {
+			auto cd = decl->getCanonicalDecl();
+			usages[cd] = {};
+		}
 		return true;
 	}
 
