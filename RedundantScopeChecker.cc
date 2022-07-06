@@ -2,9 +2,9 @@
 // which issues warning diagnostics on
 // finding variables, functions and class names beginning with _
 
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
-#include <algorithm>
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -33,21 +33,26 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	std::unordered_map<VarDecl *, std::vector<UsageInformation>> usages;
 
 	// merges all children of `compound` in vector under `compound`
-	void merge(std::vector<UsageInformation>& v, CompoundStmt *compound, CompoundStmt *parent) {
+	void merge(std::vector<UsageInformation> &v, CompoundStmt *compound,
+	           CompoundStmt *parent) {
 		std::vector<UsageInformation>::iterator itr;
 		for (itr = v.begin(); itr != v.end(); itr++) {
-			if (itr->parent == compound) break;
+			if (itr->parent == compound)
+				break;
 		}
-		if (itr == v.end() || itr+1 == v.end()) {
+		if (itr == v.end() || itr + 1 == v.end()) {
 			return;
 		}
 		// merge [itr, end) into one UsageInformation
-		*itr = (UsageInformation){compound, parent, std::vector<UsageInformation>(itr, v.end())};
-		v.erase(itr+1, v.end());
+		*itr = (UsageInformation){
+		    compound, parent,
+		    std::vector<UsageInformation>(itr, v.end())};
+		v.erase(itr + 1, v.end());
 	}
 
 	int depth = 0;
-	unsigned int unusedWarning, redundantScopeWarning, usageNote, usageStmtNote;
+	unsigned int unusedWarning, redundantScopeWarning, usageNote,
+	    usageStmtNote;
 
 	bool isInHeader(Decl *decl) {
 		auto loc = decl->getLocation();
@@ -62,28 +67,32 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	}
 
       public:
-
 	void printRedundant() {
-		for (auto& entry: usages) {
+		for (auto &entry : usages) {
 			auto vdecl = entry.first;
-			auto& uses = entry.second;
+			auto &uses = entry.second;
 			if (uses.size() > 1) {
 				continue;
 			}
 			auto loc = context->getFullLoc(vdecl->getLocation());
 			if (uses.empty()) {
-				d.Report(loc, unusedWarning) << vdecl->getNameAsString();
+				d.Report(loc, unusedWarning)
+				    << vdecl->getNameAsString();
 				continue;
 			}
-			d.Report(loc, redundantScopeWarning) << vdecl->getNameAsString();
+			d.Report(loc, redundantScopeWarning)
+			    << vdecl->getNameAsString();
+			d.Report(context->getFullLoc(uses[0].parent->getBeginLoc()),
+					usageNote);
 			printNotes(vdecl, uses);
 		}
 	}
 
-	void printNotes(VarDecl *vdecl, std::vector<UsageInformation>& uses) {
-		for (auto& use: uses) {
+	void printNotes(VarDecl *vdecl, std::vector<UsageInformation> &uses) {
+		for (auto &use : uses) {
 			if (use.children.empty()) {
-				auto loc = context->getFullLoc((use.usedIn)->getBeginLoc());
+				auto loc = context->getFullLoc(
+				    (use.usedIn)->getBeginLoc());
 				d.Report(loc, usageStmtNote);
 			} else {
 				printNotes(vdecl, use.children);
@@ -95,13 +104,17 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	                             CompilerInstance &instance, bool dumpAst)
 	    : context(context), instance(instance),
 	      d(instance.getDiagnostics()), dumpAst(dumpAst) {
-		unusedWarning =
+		unusedWarning = d.getCustomDiagID(DiagnosticsEngine::Warning,
+		                                  "Unused variable: '%0'");
+		redundantScopeWarning =
 		    d.getCustomDiagID(DiagnosticsEngine::Warning,
-		                      "Unused variable: '%0'");
-		redundantScopeWarning = d.getCustomDiagID(DiagnosticsEngine::Warning,
-				"variable %0 only used in a smaller scope, consider moving it.");
-		usageNote = d.getCustomDiagID(DiagnosticsEngine::Note, "=====> Used in this block <=====");
-		usageStmtNote = d.getCustomDiagID(DiagnosticsEngine::Note, "Used here.");
+		                      "variable %0 only used in a smaller "
+		                      "scope, consider moving it.");
+		usageNote =
+		    d.getCustomDiagID(DiagnosticsEngine::Note,
+		                      "=====> Used in this block <=====");
+		usageStmtNote =
+		    d.getCustomDiagID(DiagnosticsEngine::Note, "Used here.");
 	}
 
 	bool VisitDeclRefExpr(DeclRefExpr *e) {
@@ -113,8 +126,10 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 				VarDecl *vd = dynamic_cast<VarDecl *>(decl)
 						  ->getCanonicalDecl();
 				if (usages.count(vd)) {
-					// add the current compound statement to usages vector
-					usages[vd].push_back((UsageInformation){e, parentStmt, {}});
+					// add the current compound statement to
+					// usages vector
+					usages[vd].push_back((UsageInformation){
+					    e, parentStmt, {}});
 				}
 			}
 		}
@@ -153,9 +168,10 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 			this)
 			->TraverseCompoundStmt(stmt);
 		// Now merge any multiple scopes into one
-		// By end, usages of every variable should contain 0 or 1 elements
-		for (auto& entry: usages) {
-			auto& uses = entry.second;
+		// By end, usages of every variable should contain 0 or 1
+		// elements
+		for (auto &entry : usages) {
+			auto &uses = entry.second;
 			if (uses.empty()) {
 				continue;
 			}
@@ -210,4 +226,3 @@ class ScopeCheckerAction : public PluginASTAction {
 static FrontendPluginRegistry::Add<ScopeCheckerAction> NoUnderscore(
     "RedundantScopeChecker",
     "Warn against redundantly global-scoped variable declarations.");
-
