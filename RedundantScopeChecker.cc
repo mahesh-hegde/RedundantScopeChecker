@@ -82,9 +82,12 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 			}
 			d.Report(loc, redundantScopeWarning)
 			    << vdecl->getNameAsString();
-			d.Report(context->getFullLoc(uses[0].parent->getBeginLoc()),
+			auto outest = uses[0].parent;
+			if (outest != nullptr) {
+				d.Report(context->getFullLoc(outest->getBeginLoc()),
 					usageNote);
-			printNotes(vdecl, uses);
+				printNotes(vdecl, uses);
+			}
 		}
 	}
 
@@ -95,6 +98,9 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 				    (use.usedIn)->getBeginLoc());
 				d.Report(loc, usageStmtNote);
 			} else {
+				auto loc = context->getFullLoc(
+				    (use.usedIn)->getBeginLoc());
+				d.Report(loc, usageNote);
 				printNotes(vdecl, use.children);
 			}
 		}
