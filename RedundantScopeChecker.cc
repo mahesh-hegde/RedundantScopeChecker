@@ -40,7 +40,7 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 			if (itr->parent == compound)
 				break;
 		}
-		if (itr == v.end() || itr + 1 == v.end()) {
+		if (itr == v.end()) {
 			return;
 		}
 		// merge [itr, end) into one UsageInformation
@@ -67,6 +67,15 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	}
 
       public:
+	void mergeAll(CompoundStmt *stmt, CompoundStmt *parent) {
+		for (auto &entry : usages) {
+			auto &uses = entry.second;
+			if (uses.empty()) {
+				continue;
+			}
+			merge(uses, stmt, parent);
+		}
+	}
 	void printRedundant() {
 		for (auto &entry : usages) {
 			auto vdecl = entry.first;
@@ -80,12 +89,14 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 				    << vdecl->getNameAsString();
 				continue;
 			}
-			d.Report(loc, redundantScopeWarning)
-			    << vdecl->getNameAsString();
-			auto outest = uses[0].parent;
+			auto outest = uses[0].usedIn;
+			if (uses[0].children.empty()) {
+				// single use in global scope
+				continue;
+			}
 			if (outest != nullptr) {
-				d.Report(context->getFullLoc(outest->getBeginLoc()),
-					usageNote);
+				d.Report(loc, redundantScopeWarning)
+				    << vdecl->getNameAsString();
 				printNotes(vdecl, uses);
 			}
 		}
@@ -118,7 +129,7 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		                      "scope, consider moving it.");
 		usageNote =
 		    d.getCustomDiagID(DiagnosticsEngine::Note,
-		                      "=====> Used in this block <=====");
+		                      ":::::::: In this block ::::::::");
 		usageStmtNote =
 		    d.getCustomDiagID(DiagnosticsEngine::Note, "Used here.");
 	}
@@ -173,16 +184,7 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		    static_cast<RecursiveASTVisitor<ScopeCheckerVisitor> *>(
 			this)
 			->TraverseCompoundStmt(stmt);
-		// Now merge any multiple scopes into one
-		// By end, usages of every variable should contain 0 or 1
-		// elements
-		for (auto &entry : usages) {
-			auto &uses = entry.second;
-			if (uses.empty()) {
-				continue;
-			}
-			merge(uses, stmt, parent);
-		}
+		mergeAll(stmt, parent);
 		parentStmt = parent;
 		depth--;
 		return result;

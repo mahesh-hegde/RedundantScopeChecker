@@ -2,11 +2,12 @@
 
 char x[100] = {0};
 
-const int t = 1;
+const int twenty_eight = 28;
 
-int fr = t;
+int t = twenty_eight+3;
 
 int main() {
+	t = -2;
 	int x = 10;
 	if (x == 1) {
 		return x;
@@ -15,6 +16,7 @@ int main() {
 }
 
 void f() {
+	t = -1;
 	x[0] = 1;
 	x[1] = 11;
 	x[2] = 21;
