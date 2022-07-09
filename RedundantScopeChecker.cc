@@ -12,6 +12,8 @@
 #include "clang/Basic/FileManager.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
+#include "clang/Sema/Sema.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace clang;
 
@@ -20,6 +22,67 @@ struct UsageInformation {
 	CompoundStmt *parent;
 	std::vector<UsageInformation> children;
 };
+
+/// Plugin options
+struct {
+	// dump AST of top level components (not in header)
+	bool dumpAst = false;
+
+	// Do not warn on globals initialized with constructor calls
+	// Note - warning will be still generated if constructor is constexpr
+	bool noWarnCallInit = false;
+
+	// Warn only if variable is not modified inside the scope
+	bool charitable = false;
+
+	// do not warn on unused variables
+	bool noWarnUnused = false;
+
+	// Warn even if global variable is extern
+	bool warnExtern = false;
+
+	// do not show usage locations, only print outermost scope
+	bool noShowUsages = false;
+
+	// verbose (for debugging)
+	bool verbose = false;
+} options;
+
+void fatal(const std::string &message) {
+	llvm::errs() << message << "\n";
+	exit(1);
+}
+
+void parseArgs(const std::vector<std::string> &args) {
+	std::unordered_map<std::string, bool *> valid = {
+	    {"-dump-ast", &options.dumpAst},
+	    {"-no-warn-call-init", &options.noWarnCallInit},
+	    {"-charitable", &options.charitable},
+	    {"-no-warn-unused", &options.noWarnUnused},
+	    {"-warn-extern", &options.warnExtern},
+	    {"-no-show-usages", &options.noShowUsages},
+	    {"-verbose", &options.verbose},
+	};
+	for (auto &s : args) {
+		if (valid.count(s)) {
+			if (!*valid[s]) {
+				*valid[s] = true;
+			} else {
+				fatal("same option specified twice: " + s);
+			}
+		} else {
+			fatal("unknown option: " + s);
+		}
+	}
+}
+
+// For debugging
+template <typename V, typename... T> void verbose(V v, T... t) {
+	llvm::errs() << v;
+	verbose(t...);
+}
+
+void verbose() { llvm::errs() << "\n"; }
 
 class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
       private:
@@ -76,24 +139,56 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 			merge(uses, stmt, parent);
 		}
 	}
+
+	bool isRcsIgnore(VarDecl *decl) {
+		auto attrs = decl->getAttrs();
+		for (auto attr : attrs) {
+			if (strcmp(attr->getSpelling(), "annotate") == 0 &&
+			    ((AnnotateAttr *)attr)->getAnnotation() ==
+			        "rcs_ignore") {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	void printRedundant() {
 		for (auto &entry : usages) {
 			auto vdecl = entry.first;
+			if (isRcsIgnore(vdecl)) {
+				continue;
+			}
+			if (options.noWarnCallInit && vdecl->hasInit()) {
+				auto initExpr = vdecl->getInit();
+				auto initStyle = vdecl->getInitStyle();
+				if (initStyle == VarDecl::InitializationStyle::
+				                     CallInit &&
+				    !initExpr->isCXX11ConstantExpr(*context)) {
+					continue;
+				}
+			}
 			auto &uses = entry.second;
+
+			// used in multiple places
 			if (uses.size() > 1) {
 				continue;
 			}
+
 			auto loc = context->getFullLoc(vdecl->getLocation());
 			if (uses.empty()) {
-				d.Report(loc, unusedWarning)
-				    << vdecl->getNameAsString();
+				if (!options.noWarnUnused) {
+					d.Report(loc, unusedWarning)
+					    << vdecl->getNameAsString();
+				}
 				continue;
 			}
+
 			auto outest = uses[0].usedIn;
 			if (uses[0].children.empty()) {
 				// single use in global scope
 				continue;
 			}
+
 			if (outest != nullptr) {
 				d.Report(loc, redundantScopeWarning)
 				    << vdecl->getNameAsString();
@@ -127,9 +222,8 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		    d.getCustomDiagID(DiagnosticsEngine::Warning,
 		                      "variable %0 only used in a smaller "
 		                      "scope, consider moving it.");
-		usageNote =
-		    d.getCustomDiagID(DiagnosticsEngine::Note,
-		                      ":::::::: In this block ::::::::");
+		usageNote = d.getCustomDiagID(
+		    DiagnosticsEngine::Note, ":::::::: In this block ::::::::");
 		usageStmtNote =
 		    d.getCustomDiagID(DiagnosticsEngine::Note, "Used here.");
 	}
@@ -220,17 +314,38 @@ class ScopeCheckerAction : public PluginASTAction {
 
 	virtual bool ParseArgs(const CompilerInstance &,
 	                       const std::vector<std::string> &opts) override {
-		if (opts.size() != 0 && opts[0] == "-dump-ast") {
-			dumpAst = true;
-		}
+		parseArgs(opts);
 		return true;
 	}
 
 	virtual PluginASTAction::ActionType getActionType() override {
-		return PluginASTAction::AddAfterMainAction;
+		return PluginASTAction::AddBeforeMainAction;
 	}
 };
 
 static FrontendPluginRegistry::Add<ScopeCheckerAction> NoUnderscore(
     "RedundantScopeChecker",
     "Warn against redundantly global-scoped variable declarations.");
+
+// Register rcs_ignore attribute
+class RcsIgnoreAttr : public ParsedAttrInfo {
+      public:
+	RcsIgnoreAttr() {
+		static constexpr Spelling s[] = {
+		    {ParsedAttr::AS_CXX11, "rcs_ignore"},
+		    {ParsedAttr::AS_C2x, "rcs_ignore"},
+		    {ParsedAttr::AS_GNU, "rcs_ignore"}};
+		Spellings = s;
+	}
+
+	AttrHandling handleDeclAttribute(Sema &S, Decl *D,
+	                                 const ParsedAttr &A) const override {
+
+		D->getCanonicalDecl()->addAttr(
+		    AnnotateAttr::Create(S.Context, "rcs_ignore"));
+		return AttributeApplied;
+	}
+};
+
+static ParsedAttrInfoRegistry::Add<RcsIgnoreAttr>
+    RcsIgnore("rcs_ignore", "example attribute description");

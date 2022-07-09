@@ -22,5 +22,6 @@ if(WIN32 OR CYGWIN)
     clangAST
     clangBasic
     clangFrontend
+    clangLex
     )
 endif()

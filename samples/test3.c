@@ -1,5 +1,6 @@
 #include <stdio.h>
 
+__attribute__((rcs_ignore))
 char x[100] = {0};
 
 const int twenty_eight = 28;
