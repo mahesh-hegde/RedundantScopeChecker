@@ -42,6 +42,15 @@ struct {
 	bool verbose = false;
 } options;
 
+// For debugging
+void verbose() { llvm::errs() << "\n"; }
+
+template <typename V, typename... T> void verbose(V v, T... t) {
+	if (!options.verbose) return;
+	llvm::errs() << v;
+	verbose(t...);
+}
+
 void fatal(const std::string &message) {
 	llvm::errs() << message << "\n";
 	exit(1);
@@ -59,6 +68,7 @@ void parseArgs(const std::vector<std::string> &args) {
 		if (valid.count(s)) {
 			if (!*valid[s]) {
 				*valid[s] = true;
+				verbose("set option ", s);
 			} else {
 				fatal("same option specified twice: " + s);
 			}
@@ -68,17 +78,8 @@ void parseArgs(const std::vector<std::string> &args) {
 	}
 }
 
-// For debugging
-template <typename V, typename... T> void verbose(V v, T... t) {
-	llvm::errs() << v;
-	verbose(t...);
-}
-
-void verbose() { llvm::errs() << "\n"; }
-
 class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
       private:
-	bool dumpAst;
 	ASTContext *context;
 	CompilerInstance &instance;
 	CompoundStmt *parentStmt = nullptr;
@@ -106,6 +107,7 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	}
 
 	int depth = 0;
+	bool declPrinted = false;
 	unsigned int unusedWarning, redundantScopeWarning, usageNote,
 	    usageStmtNote;
 
@@ -223,9 +225,9 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	}
 
 	explicit ScopeCheckerVisitor(ASTContext *context,
-	                             CompilerInstance &instance, bool dumpAst)
+	                             CompilerInstance &instance)
 	    : context(context), instance(instance),
-	      d(instance.getDiagnostics()), dumpAst(dumpAst) {
+	      d(instance.getDiagnostics()) {
 		unusedWarning = d.getCustomDiagID(DiagnosticsEngine::Warning,
 		                                  "Unused variable: '%0'");
 		redundantScopeWarning =
@@ -273,6 +275,14 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		return true;
 	}
 
+	bool VisitDecl(Decl *decl) {
+		if (!isInHeader(decl) && options.dumpAst && !declPrinted) {
+			decl->dumpColor();
+			declPrinted = true;
+		}
+		return true;
+	}
+
 	// a scope generally begins with a compound statement
 	// We need to produce a warning with few notes
 	// Location of declaration, and the first compound statement
@@ -298,6 +308,14 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		depth--;
 		return result;
 	}
+
+	bool TraverseDecl(Decl *decl) {
+		auto oldDeclPrinted = declPrinted;
+		auto result = static_cast<RecursiveASTVisitor<ScopeCheckerVisitor> *>(this)
+			->TraverseDecl(decl);
+		declPrinted = oldDeclPrinted;
+		return result;
+	}
 };
 
 class ScopeCheckerConsumer : public ASTConsumer {
@@ -305,9 +323,9 @@ class ScopeCheckerConsumer : public ASTConsumer {
 	ScopeCheckerVisitor visitor;
 
       public:
-	ScopeCheckerConsumer(CompilerInstance &instance, bool dumpAst)
+	ScopeCheckerConsumer(CompilerInstance &instance)
 	    : instance(instance),
-	      visitor(&instance.getASTContext(), instance, dumpAst) {}
+	      visitor(&instance.getASTContext(), instance) {}
 
 	virtual void HandleTranslationUnit(ASTContext &context) override {
 		visitor.TraverseDecl(context.getTranslationUnitDecl());
@@ -323,8 +341,7 @@ class ScopeCheckerAction : public PluginASTAction {
 	virtual std::unique_ptr<ASTConsumer>
 	CreateASTConsumer(CompilerInstance &instance,
 	                  llvm::StringRef) override {
-		return std::make_unique<ScopeCheckerConsumer>(instance,
-		                                              dumpAst);
+		return std::make_unique<ScopeCheckerConsumer>(instance);
 	}
 
 	virtual bool ParseArgs(const CompilerInstance &,
