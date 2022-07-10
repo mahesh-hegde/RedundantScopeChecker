@@ -27,6 +27,7 @@ struct UsageInformation {
 struct {
 	bool dumpAst = false;
 	bool noWarnUnused = false;
+	bool warnInit = false;
 	bool noShowUsages = false;
 	bool verbose = false;
 } options;
@@ -57,6 +58,7 @@ std::map<std::string, PluginOption> validOptions = {
      {&options.noWarnUnused,
       "Do not warn on unused "
       "variables, only on those used in smaller scopes."}},
+	{"-warn-init", {&options.warnInit, "Warn even if declaration contains ""a non const initialization"}},
     {"-no-show-usages",
      {&options.noShowUsages, "Do not show detailed "
                              "usage information for variables."}},
@@ -183,7 +185,7 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 			if (isRcsIgnore(vdecl)) {
 				continue;
 			}
-			if (hasSideEffectInit(vdecl)) {
+			if (hasSideEffectInit(vdecl) && !options.warnInit) {
 				continue;
 			}
 			auto &uses = entry.second;
