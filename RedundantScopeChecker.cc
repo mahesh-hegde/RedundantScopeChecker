@@ -32,14 +32,8 @@ struct {
 	// Note - warning will be still generated if constructor is constexpr
 	bool noWarnCallInit = false;
 
-	// Warn only if variable is not modified inside the scope
-	bool charitable = false;
-
 	// do not warn on unused variables
 	bool noWarnUnused = false;
-
-	// Warn even if global variable is extern
-	bool warnExtern = false;
 
 	// do not show usage locations, only print outermost scope
 	bool noShowUsages = false;
@@ -57,9 +51,7 @@ void parseArgs(const std::vector<std::string> &args) {
 	std::unordered_map<std::string, bool *> valid = {
 	    {"-dump-ast", &options.dumpAst},
 	    {"-no-warn-call-init", &options.noWarnCallInit},
-	    {"-charitable", &options.charitable},
 	    {"-no-warn-unused", &options.noWarnUnused},
-	    {"-warn-extern", &options.warnExtern},
 	    {"-no-show-usages", &options.noShowUsages},
 	    {"-verbose", &options.verbose},
 	};
@@ -122,11 +114,15 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		auto floc = context->getFullLoc(loc);
 		if (floc.isInSystemHeader())
 			return true;
-		auto entry = floc.getFileEntry()->getName();
-		if (entry.endswith(".h") || entry.endswith(".hpp")) {
+		auto file = floc.getFileEntry();
+		if (file == nullptr)
 			return true;
+		auto entry = file->getName();
+		if (entry.endswith(".cpp") || entry.endswith(".cc") ||
+		    entry.endswith(".c")) {
+			return false;
 		}
-		return false;
+		return true;
 	}
 
       public:
@@ -152,25 +148,37 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		return false;
 	}
 
+	bool hasCallInit(VarDecl *decl) {
+		if (decl->getInitStyle() !=
+		    VarDecl::InitializationStyle::CallInit) {
+			return false;
+		}
+		auto init = decl->getInit();
+		auto langOpts = context->getLangOpts();
+		if (init->isCXX11ConstantExpr(*context) ||
+		    init->isConstantInitializer(*context, false)) {
+			return false;
+		}
+		return true;
+	}
+
 	void printRedundant() {
 		for (auto &entry : usages) {
 			auto vdecl = entry.first;
 			if (isRcsIgnore(vdecl)) {
 				continue;
 			}
-			if (options.noWarnCallInit && vdecl->hasInit()) {
-				auto initExpr = vdecl->getInit();
-				auto initStyle = vdecl->getInitStyle();
-				if (initStyle == VarDecl::InitializationStyle::
-				                     CallInit &&
-				    !initExpr->isCXX11ConstantExpr(*context)) {
-					continue;
-				}
+			if (options.noWarnCallInit && hasCallInit(vdecl)) {
+				continue;
 			}
 			auto &uses = entry.second;
 
 			// used in multiple places
 			if (uses.size() > 1) {
+				continue;
+			}
+
+			if (vdecl->hasExternalStorage()) {
 				continue;
 			}
 
@@ -192,7 +200,9 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 			if (outest != nullptr) {
 				d.Report(loc, redundantScopeWarning)
 				    << vdecl->getNameAsString();
-				printNotes(vdecl, uses);
+				if (!options.noShowUsages) {
+					printNotes(vdecl, uses);
+				}
 			}
 		}
 	}
@@ -248,7 +258,12 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	}
 
 	bool VisitVarDecl(VarDecl *decl) {
+		// Ignore variables defined in headers
 		if (isInHeader(decl)) {
+			return true;
+		}
+		// ignore function parameters
+		if (auto const pd = dynamic_cast<ParmVarDecl *>(decl)) {
 			return true;
 		}
 		if (depth == 0) {
@@ -323,7 +338,7 @@ class ScopeCheckerAction : public PluginASTAction {
 	}
 };
 
-static FrontendPluginRegistry::Add<ScopeCheckerAction> NoUnderscore(
+static FrontendPluginRegistry::Add<ScopeCheckerAction> ScopeChecker(
     "RedundantScopeChecker",
     "Warn against redundantly global-scoped variable declarations.");
 
