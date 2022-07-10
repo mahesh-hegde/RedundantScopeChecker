@@ -3,6 +3,7 @@
 // finding variables, functions and class names beginning with _
 
 #include <algorithm>
+#include <cstdio>
 #include <unordered_map>
 #include <vector>
 
@@ -23,22 +24,10 @@ struct UsageInformation {
 	std::vector<UsageInformation> children;
 };
 
-/// Plugin options
 struct {
-	// dump AST of top level components (not in header)
 	bool dumpAst = false;
-
-	// Do not warn on globals initialized with constructor calls
-	// Note - warning will be still generated if constructor is constexpr
-	bool noWarnCallInit = false;
-
-	// do not warn on unused variables
 	bool noWarnUnused = false;
-
-	// do not show usage locations, only print outermost scope
 	bool noShowUsages = false;
-
-	// verbose (for debugging)
 	bool verbose = false;
 } options;
 
@@ -46,7 +35,8 @@ struct {
 void verbose() { llvm::errs() << "\n"; }
 
 template <typename V, typename... T> void verbose(V v, T... t) {
-	if (!options.verbose) return;
+	if (!options.verbose)
+		return;
 	llvm::errs() << v;
 	verbose(t...);
 }
@@ -56,18 +46,41 @@ void fatal(const std::string &message) {
 	exit(1);
 }
 
+struct PluginOption {
+	bool *addr;
+	std::string help;
+};
+
+std::map<std::string, PluginOption> validOptions = {
+    {"-dump-ast", {&options.dumpAst, "Print AST for source file."}},
+    {"-no-warn-unused",
+     {&options.noWarnUnused,
+      "Do not warn on unused "
+      "variables, only on those used in smaller scopes."}},
+    {"-no-show-usages",
+     {&options.noShowUsages, "Do not show detailed "
+                             "usage information for variables."}},
+    {"-verbose", {&options.verbose, "(For debugging) Print verbose logs."}},
+};
+
+void printHelp() {
+	llvm::errs() << "Plugin options: \n";
+	for (auto &entry : validOptions) {
+		fprintf(stderr, "  %-16s %s\n", entry.first.c_str(),
+		        entry.second.help.c_str());
+	}
+}
+
 void parseArgs(const std::vector<std::string> &args) {
-	std::unordered_map<std::string, bool *> valid = {
-	    {"-dump-ast", &options.dumpAst},
-	    {"-no-warn-call-init", &options.noWarnCallInit},
-	    {"-no-warn-unused", &options.noWarnUnused},
-	    {"-no-show-usages", &options.noShowUsages},
-	    {"-verbose", &options.verbose},
-	};
+	if (args.size() == 1 && args[0] == "-help") {
+		printHelp();
+		exit(1);
+	}
+
 	for (auto &s : args) {
-		if (valid.count(s)) {
-			if (!*valid[s]) {
-				*valid[s] = true;
+		if (validOptions.count(s)) {
+			if (!*(validOptions[s].addr)) {
+				*(validOptions[s].addr) = true;
 				verbose("set option ", s);
 			} else {
 				fatal("same option specified twice: " + s);
@@ -141,24 +154,24 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	bool isRcsIgnore(VarDecl *decl) {
 		auto attrs = decl->getAttrs();
 		for (auto attr : attrs) {
+			if (strcmp(attr->getSpelling(), "used") == 0) {
+				return true;
+			}
 			if (strcmp(attr->getSpelling(), "annotate") == 0 &&
 			    ((AnnotateAttr *)attr)->getAnnotation() ==
 			        "rcs_ignore") {
 				return true;
 			}
+			verbose("attr ", attr->getSpelling(), "on ",
+					decl->getNameAsString());
 		}
 		return false;
 	}
 
-	bool hasCallInit(VarDecl *decl) {
-		if (decl->getInitStyle() !=
-		    VarDecl::InitializationStyle::CallInit) {
-			return false;
-		}
+	bool hasSideEffectInit(VarDecl *decl) {
 		auto init = decl->getInit();
 		auto langOpts = context->getLangOpts();
-		if (init->isCXX11ConstantExpr(*context) ||
-		    init->isConstantInitializer(*context, false)) {
+		if (init == nullptr || init->isEvaluatable(*context)) {
 			return false;
 		}
 		return true;
@@ -170,7 +183,7 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 			if (isRcsIgnore(vdecl)) {
 				continue;
 			}
-			if (options.noWarnCallInit && hasCallInit(vdecl)) {
+			if (hasSideEffectInit(vdecl)) {
 				continue;
 			}
 			auto &uses = entry.second;
@@ -228,8 +241,9 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	                             CompilerInstance &instance)
 	    : context(context), instance(instance),
 	      d(instance.getDiagnostics()) {
-		unusedWarning = d.getCustomDiagID(DiagnosticsEngine::Warning,
-		                                  "Unused variable: '%0'");
+		unusedWarning = d.getCustomDiagID(
+		    DiagnosticsEngine::Warning, "Unused global variable: '%0'. "
+						"You can remove it.");
 		redundantScopeWarning =
 		    d.getCustomDiagID(DiagnosticsEngine::Warning,
 		                      "variable %0 only used in a smaller "
@@ -311,7 +325,9 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 
 	bool TraverseDecl(Decl *decl) {
 		auto oldDeclPrinted = declPrinted;
-		auto result = static_cast<RecursiveASTVisitor<ScopeCheckerVisitor> *>(this)
+		auto result =
+		    static_cast<RecursiveASTVisitor<ScopeCheckerVisitor> *>(
+			this)
 			->TraverseDecl(decl);
 		declPrinted = oldDeclPrinted;
 		return result;
@@ -324,8 +340,8 @@ class ScopeCheckerConsumer : public ASTConsumer {
 
       public:
 	ScopeCheckerConsumer(CompilerInstance &instance)
-	    : instance(instance),
-	      visitor(&instance.getASTContext(), instance) {}
+	    : instance(instance), visitor(&instance.getASTContext(), instance) {
+	}
 
 	virtual void HandleTranslationUnit(ASTContext &context) override {
 		visitor.TraverseDecl(context.getTranslationUnitDecl());

@@ -1,11 +1,13 @@
 #include <stdio.h>
 
-__attribute__((rcs_ignore))
-char x[100] = {0};
+// there should be no warning in this file
+// because one uses rcs_ignore, other is used in both scopes
+
+__attribute__((rcs_ignore)) char x[100] = {0};
 
 const int twenty_eight = 28;
 
-int t = twenty_eight+3;
+int t = twenty_eight + 3;
 
 int main() {
 	t = -2;
