@@ -102,6 +102,7 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	DiagnosticsEngine &d;
 
 	std::unordered_map<VarDecl *, std::vector<UsageInformation>> usages;
+	std::vector<VarDecl *> globals;
 
 	// merges all children of `compound` in vector under `compound`
 	void merge(std::vector<UsageInformation> &v, CompoundStmt *compound,
@@ -180,21 +181,22 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	}
 
 	void printRedundant() {
-		for (auto &entry : usages) {
-			auto vdecl = entry.first;
+		for (auto &vdecl: globals) {
 			if (isRcsIgnore(vdecl)) {
 				continue;
 			}
 			if (hasSideEffectInit(vdecl) && !options.warnInit) {
 				continue;
 			}
-			auto &uses = entry.second;
+			auto &uses = usages[vdecl];
 
 			// used in multiple places
 			if (uses.size() > 1) {
 				continue;
 			}
 
+			// declared `extern` - storage allocated in another translation
+			// unit. It must be in global scope.
 			if (vdecl->hasExternalStorage()) {
 				continue;
 			}
@@ -286,6 +288,7 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 		}
 		if (depth == 0) {
 			auto cd = decl->getCanonicalDecl();
+			globals.push_back(cd);
 			usages[cd] = {};
 		}
 		return true;

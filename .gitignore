@@ -3,6 +3,8 @@ CMakeFiles/
 cmake_install.cmake
 compile_commands.json
 Makefile
-RedundantScopeChecker.so
+*.so
 a.out
 .cache/
+*.o
+
