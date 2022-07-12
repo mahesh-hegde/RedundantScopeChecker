@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.7 FATAL_ERROR)
 project(redundant_scope_checker VERSION 1.0.0 LANGUAGES CXX)
 
-find_package(LLVM REQUIRED CONFIG)
+find_package(LLVM 11 REQUIRED CONFIG)
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(AddLLVM)
 

@@ -315,7 +315,6 @@ class ScopeCheckerVisitor : public RecursiveASTVisitor<ScopeCheckerVisitor> {
 	// keep track of scopes.
 	bool TraverseCompoundStmt(CompoundStmt *stmt) {
 		depth++;
-		// implicit stack
 		auto parent = parentStmt;
 		parentStmt = stmt;
 		auto result =
