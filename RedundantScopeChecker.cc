@@ -1,7 +1,3 @@
-// simple example of a clang plugin tool
-// which issues warning diagnostics on
-// finding variables, functions and class names beginning with _
-
 #include <algorithm>
 #include <cstdio>
 #include <unordered_map>
